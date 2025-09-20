@@ -1,8 +1,9 @@
 # bot.py
-import os
+import os, shutil
 import discord
 from dotenv import load_dotenv
 from discord.ext import commands
+from yt_dlp import YoutubeDL
 
 load_dotenv()
 TOKEN = os.getenv('DISCORD_TOKEN')
@@ -59,7 +60,7 @@ async def on_error(event, *args, **kwargs):
 
 @bot.command(name="commands", help="List of Bot Commands.")
 async def list_commands(ctx: commands.Context):
-    return await ctx.send("commands, join, leave")
+    return await ctx.send("commands, join, leave/dc/disconnect, play_yt <url>, stop")
 
 @bot.command(name="join", help="Bot joins your current voice channel.")
 async def join(ctx: commands.Context):
@@ -94,6 +95,66 @@ async def leave(ctx: commands.Context):
     channel_name = vc.channel.name
     await vc.disconnect(force = True)
     await ctx.send(f"Left **{channel_name}** voice channel.")
+
+@bot.command(name="play_yt", help="Bot plays audio from a youtube video (ex: `!play_yt pasted_youtube_url_here`).")
+async def play_yt(ctx: commands.Context, url: str):
+    try:
+        me = ctx.me if hasattr(ctx, "me") else ctx.guild.me
+        if ctx.guild and ctx.channel.permissions_for(me).manage_messages:
+            await ctx.message.edit(suppress=True)
+    except Exception:
+        pass
+
+    try:
+        if not ctx.author.voice or not ctx.author.voice.channel:
+            return await ctx.send ("Join a voice channel first.")
+        
+        vc = ctx.voice_client
+        if not vc or not vc.is_connected():
+            await ctx.author.voice.channel.connect(reconnect=True)
+            vc = ctx.voice_client
+
+        if vc.is_playing():
+            vc.stop()
+
+        YDL_OPTIONS = {"format": "bestaudio/best","noplaylist": True}
+        FFMPEG_OPTIONS = {'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5','options': '-vn'}
+
+        with YoutubeDL(YDL_OPTIONS) as ydl:
+            info = ydl.extract_info(url, download=False)
+            if "entries" in info:
+                info = info["entries"][0]
+            stream_url = info.get("url") or info["formats"][0]["url"]
+            title = info.get("title", "(unknown)")
+
+            ffmpeg_exe = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
+            if not ffmpeg_exe:
+                await ctx.send("FFmpeg not found, Install it or set FFMPEG_PATH.")
+                return
+
+            source = discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_exe, **FFMPEG_OPTIONS)
+            vc.play(source, after=lambda e: print(f"FFmpeg error: {e}") if e else None)
+
+            await ctx.send(f"▶️ Playing: {title}")
+    except discord.Forbidden:
+        await ctx.send(f"I don't have permission to connect/speak in that channel.")
+    except discord.ClientException as e:
+        await ctx.send(f"Could not connect: {e}")
+    except Exception as e:
+        await ctx.send("Unexpected error while connecting.")
+        raise
+
+@bot.command(name="stop", aliases=["stop_yt", "stop_all"], help="Bot stops all audio.")
+async def stop_yt(ctx: commands.Context):
+    vc = ctx.voice_client
+
+    if not vc or not vc.is_connected():
+        return await ctx.send("I'm not in a voice channel.")
+    if vc.is_playing():
+        vc.stop()
+        return await ctx.send("Stopping all bot audio...")
+    await ctx.send("nothing is playing.")
+
 
 #### END BOT COMMANDS ####
 
