@@ -1,6 +1,7 @@
 # bot.py
 import os, shutil
 import discord
+from discord import app_commands
 from dotenv import load_dotenv
 from discord.ext import commands
 from yt_dlp import YoutubeDL
@@ -25,6 +26,12 @@ async def on_ready():
         status = discord.Status.online,
         activity = discord.Activity(type=discord.ActivityType.watching, name=f"{bot_prefix}commands")
     )
+
+    try:
+        await bot.tree.sync()
+        print("Slash commands synced globally.")
+    except Exception as e:
+        print("Slash command sync failed: ", e)
 
 @bot.event
 async def on_member_join(member):
@@ -60,7 +67,7 @@ async def on_error(event, *args, **kwargs):
 
 @bot.command(name="commands", help="List of Bot Commands.")
 async def list_commands(ctx: commands.Context):
-    return await ctx.send("commands, join, leave/dc/disconnect, play_yt <url>, stop")
+    return await ctx.send("!join, !leave/dc/disconnect, !play_yt <url>, !stop — or use slash: `/join`, `/leave`, `/play`")
 
 @bot.command(name="join", help="Bot joins your current voice channel.")
 async def join(ctx: commands.Context):
@@ -87,6 +94,31 @@ async def join(ctx: commands.Context):
         await ctx.send("Unexpected error while connecting.")
         raise
 
+@bot.tree.command(name="join", description="Bot joins your current voice channel.")
+async def slash_join(interaction: discord.Interaction):
+    try:
+        if not interaction.user or not interaction.user.voice or not interaction.user.voice.channel:
+            return await interaction.response.send_message("Join a voice channel first.", ephemeral=True)
+        
+        channel = interaction.user.voice.channel
+        vc: discord.VoiceClient | None = interaction.guild.voice_client
+
+        if vc and vc.is_connected():
+            if vc.channel.id == channel.id:
+                return await interaction.response.send_message(f"Already connected to **{channel}**.", ephemeral=True)
+            await vc.move_to(channel)
+            return await interaction.response.send_message(f"Moved to **{channel}**.", ephemeral=True)
+        else:
+            await channel.connect(reconnect=True)
+            return await interaction.response.send_message(f"Joined **{channel}**.", ephemeral=True)
+    except discord.Forbidden:
+        await interaction.response.send_message("I don't have permission to connect/speak there.", ephemeral=True)
+    except discord.ClientException as e:
+        await interaction.response.send_message(F"Could not connect: {e}", ephemeral=True)
+    except Exception:
+        await interaction.response.send_message("Unexpected error while connecting.", ephemeral=True)
+        raise
+
 @bot.command(name="leave", aliases=["dc", "disconnect"], help="Bot leaves the Voice Channel.")
 async def leave(ctx: commands.Context):
     vc: discord.VoiceClient | None = ctx.voice_client
@@ -95,6 +127,15 @@ async def leave(ctx: commands.Context):
     channel_name = vc.channel.name
     await vc.disconnect(force = True)
     await ctx.send(f"Left **{channel_name}** voice channel.")
+
+@bot.tree.command(name="leave", description="Bot leaves the voice channel.")
+async def slash_leave(interaction: discord.Interaction):
+    vc: discord.VoiceClient | None = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        return await interaction.response.send_message("I'm not connected to a voice channel.", ephemeral=True)
+    channel_name = vc.channel.name
+    await vc.disconnect(force=True)
+    await interaction.response.send_message(F"Left **{channel_name}**.", ephemeral=True)
 
 @bot.command(name="play_yt", help="Bot plays audio from a youtube video (ex: `!play_yt pasted_youtube_url_here`).")
 async def play_yt(ctx: commands.Context, url: str):
@@ -144,6 +185,45 @@ async def play_yt(ctx: commands.Context, url: str):
         await ctx.send("Unexpected error while connecting.")
         raise
 
+@bot.tree.command(name="play_yt", description="Play audio from a YouTube URL.")
+@app_commands.describe(url="YouTube video URL")
+async def slash_play(interaction: discord.Interaction, url: str):
+    await interaction.response.defer(thinking=True)
+
+    if not interaction.user or not interaction.user.voice or not interaction.user.voice.channel:
+        return await interaction.followup.send("Join a voice channel first.", ephemeral=True)
+
+    channel = interaction.user.voice.channel
+    vc: discord.VoiceClient | None = interaction.guild.voice_client
+    if not vc or not vc.is_connected():
+        await channel.connect(reconnect=True)
+        vc = interaction.guild.voice_client
+
+    if vc.is_playing():
+        vc.stop()
+
+    YDL_OPTIONS = {"format": "bestaudio/best", "noplaylist": True, "quiet": True, "no_warnings": True}
+    FFMPEG_OPTIONS = {
+        "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
+        "options": "-vn",
+    }
+
+    with YoutubeDL(YDL_OPTIONS) as ydl:
+        info = ydl.extract_info(url, download=False)
+        if "entries" in info:
+            info = info["entries"][0]
+        stream_url = info.get("url") or info["formats"][0]["url"]
+        title = info.get("title", "(unknown)")
+
+    ffmpeg_exe = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
+    if not ffmpeg_exe:
+        return await interaction.followup.send("FFmpeg not found. Install it or set FFMPEG_PATH.", ephemeral=True)
+
+    source = discord.FFmpegPCMAudio(stream_url, executable=ffmpeg_exe, **FFMPEG_OPTIONS)
+    vc.play(source, after=lambda e: print(f"FFmpeg error: {e}") if e else None)
+
+    await interaction.followup.send(f"▶️ Playing: {title}", ephemeral=False)
+
 @bot.command(name="stop", aliases=["stop_yt", "stop_all"], help="Bot stops all audio.")
 async def stop_yt(ctx: commands.Context):
     vc = ctx.voice_client
@@ -155,6 +235,16 @@ async def stop_yt(ctx: commands.Context):
         return await ctx.send("Stopping all bot audio...")
     await ctx.send("nothing is playing.")
 
+@bot.tree.command(name="stop", description="Stop all bot audio.")
+async def slash_stop(interaction: discord.Interaction):
+    vc: discord.VoiceClient | None = interaction.guild.voice_client if interaction.guild else None
+
+    if not vc or not vc.is_connected():
+        return await interaction.response.send_message("I'm not in a voice channel.", ephemeral=True)
+    if vc.is_playing():
+        vc.stop()
+        return await interaction.response.send_message("Stopping all bot audio...", ephemeral=True)
+    await interaction.response.send_message("Nothing is playing.", ephemeral=True)
 
 #### END BOT COMMANDS ####
 
