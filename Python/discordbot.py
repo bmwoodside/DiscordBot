@@ -55,11 +55,17 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_error(event, *args, **kwargs):
-    with open('err.log', 'a', encoding="utf-8") as f:
-        if event == 'on_message':
-            f.write(f'Unhandled message: {args[0]}\n')
-        else:
-            raise
+    ##### LOCAL EXECUTION ONLY - OUTPUT TO FILE ####
+    # with open('err.log', 'a', encoding="utf-8") as f:
+    #     if event == 'on_message':
+    #         f.write(f'Unhandled message: {args[0]}\n')
+    #     else:
+    #         raise
+#### Auto-Deploy-Safe ####
+    if event == "on_message":
+        print(f"[on_error] Unhandled message: {args[0]}")
+    else:
+        raise
 
 #### End Bot Events ####
 
